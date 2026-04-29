@@ -1,5 +1,37 @@
 const http = require("node:http");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+
+function loadLocalEnv() {
+  if (!fs.existsSync(".env")) {
+    return;
+  }
+
+  const env = fs.readFileSync(".env", "utf8");
+
+  for (const line of env.split(/\r?\n/)) {
+    const trimmed = line.trim();
+
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim();
+
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const BINANCE_API_KEY = process.env.BINANCE_API_KEY;
@@ -10,6 +42,7 @@ const BINANCE_PORTFOLIO_BASE_URL =
   process.env.BINANCE_PORTFOLIO_BASE_URL || "https://papi.binance.com";
 const BINANCE_FUTURES_PRICE_URL =
   `${BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/price?symbol=BTCUSDT`;
+const SYMBOL = "BTCUSDT";
 
 function sendJson(res, statusCode, data) {
   const body = JSON.stringify(data);
@@ -17,8 +50,7 @@ function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "Content-Type, X-Binance-API-Key, X-Binance-API-Secret",
+    "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
   });
@@ -47,6 +79,57 @@ async function getBtcUsdtFuturesPrice() {
   };
 }
 
+function getUtcDayStartTime() {
+  const now = new Date();
+  return Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
+}
+
+async function getBtcUsdtMarketStats() {
+  const utcDayStartTime = getUtcDayStartTime();
+  const [price, klinesResponse, premiumResponse] = await Promise.all([
+    getBtcUsdtFuturesPrice(),
+    fetch(
+      `${BINANCE_FUTURES_BASE_URL}/fapi/v1/klines?symbol=${SYMBOL}&interval=1d&startTime=${utcDayStartTime}&limit=1`,
+      { headers: { Accept: "application/json" } },
+    ),
+    fetch(`${BINANCE_FUTURES_BASE_URL}/fapi/v1/premiumIndex?symbol=${SYMBOL}`, {
+      headers: { Accept: "application/json" },
+    }),
+  ]);
+
+  if (!klinesResponse.ok) {
+    throw new Error(`Binance klines returned ${klinesResponse.status}`);
+  }
+
+  if (!premiumResponse.ok) {
+    throw new Error(`Binance funding returned ${premiumResponse.status}`);
+  }
+
+  const klines = await klinesResponse.json();
+  const premium = await premiumResponse.json();
+  const dayOpenPrice = Number(klines[0]?.[1]);
+  const currentPrice = Number(price.price);
+  const lastFundingRate = Number(premium.lastFundingRate);
+
+  return {
+    ...price,
+    utcDayOpenPrice: dayOpenPrice,
+    utcDayChangePercent:
+      dayOpenPrice > 0
+        ? ((currentPrice - dayOpenPrice) / dayOpenPrice) * 100
+        : null,
+    fundingRate: premium.lastFundingRate,
+    fundingAnnualizedPercent: Number.isFinite(lastFundingRate)
+      ? lastFundingRate * 3 * 365 * 100
+      : null,
+    nextFundingTime: premium.nextFundingTime,
+  };
+}
+
 function assertBinanceCredentials(apiKey, apiSecret) {
   if (!apiKey || !apiSecret) {
     const error = new Error(
@@ -65,14 +148,9 @@ function signQuery(queryString, apiSecret) {
     .digest("hex");
 }
 
-async function signedBinanceRequest(
-  baseUrl,
-  path,
-  params = {},
-  credentials = {},
-) {
-  const apiKey = credentials.apiKey || BINANCE_API_KEY;
-  const apiSecret = credentials.apiSecret || BINANCE_API_SECRET;
+async function signedBinanceRequest(baseUrl, path, params = {}) {
+  const apiKey = BINANCE_API_KEY;
+  const apiSecret = BINANCE_API_SECRET;
 
   assertBinanceCredentials(apiKey, apiSecret);
 
@@ -127,6 +205,10 @@ function mapBalance(balance) {
   };
 }
 
+function sumIncome(incomes) {
+  return incomes.reduce((total, income) => total + toNumber(income.income), 0);
+}
+
 function mapPosition(position) {
   return {
     symbol: position.symbol,
@@ -144,21 +226,27 @@ function mapPosition(position) {
   };
 }
 
-async function getBinanceAccountInfo(symbol, credentials) {
+async function getBinanceAccountInfo(symbol) {
   const balanceParams = symbol ? { asset: "USDT" } : {};
-  const [balanceResponse, positions] = await Promise.all([
+  const utcDayStartTime = getUtcDayStartTime();
+  const [balanceResponse, positions, realizedPnlHistory] = await Promise.all([
     signedBinanceRequest(
       BINANCE_PORTFOLIO_BASE_URL,
       "/papi/v1/balance",
       balanceParams,
-      credentials,
     ),
     signedBinanceRequest(
       BINANCE_PORTFOLIO_BASE_URL,
       "/papi/v1/um/positionRisk",
       symbol ? { symbol } : {},
-      credentials,
     ),
+    signedBinanceRequest(BINANCE_PORTFOLIO_BASE_URL, "/papi/v1/um/income", {
+      ...(symbol ? { symbol } : {}),
+      incomeType: "REALIZED_PNL",
+      startTime: utcDayStartTime.toString(),
+      endTime: Date.now().toString(),
+      limit: "1000",
+    }),
   ]);
   const balances = Array.isArray(balanceResponse)
     ? balanceResponse
@@ -171,6 +259,9 @@ async function getBinanceAccountInfo(symbol, credentials) {
   return {
     balances: balances.map(mapBalance),
     positions: activePositions.map(mapPosition),
+    realizedPnl: sumIncome(realizedPnlHistory),
+    realizedPnlAsset: "USDT",
+    realizedPnlSince: new Date(utcDayStartTime).toISOString(),
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -201,16 +292,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/market/btcusdt") {
+    try {
+      const marketStats = await getBtcUsdtMarketStats();
+      sendJson(res, 200, marketStats);
+    } catch (error) {
+      sendJson(res, 502, {
+        error: "failed_to_fetch_binance_market_stats",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/binance/account") {
     try {
       const symbol = url.searchParams.get("symbol");
-      const credentials = {
-        apiKey: req.headers["x-binance-api-key"],
-        apiSecret: req.headers["x-binance-api-secret"],
-      };
       const accountInfo = await getBinanceAccountInfo(
         symbol ? symbol.toUpperCase() : undefined,
-        credentials,
       );
       sendJson(res, 200, accountInfo);
     } catch (error) {

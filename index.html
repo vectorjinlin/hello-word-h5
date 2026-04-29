@@ -13,71 +13,41 @@
         <h1 id="btc-price">Loading...</h1>
         <div class="meta-row">
           <p id="price-time" class="meta">Fetching latest price</p>
-          <button
-            id="refresh-button"
-            class="refresh-button"
-            type="button"
-            aria-label="Update price"
-            title="Update price"
-          >
-            <span class="refresh-icon" aria-hidden="true"></span>
-          </button>
+        </div>
+        <div class="market-info">
+          <p>UTC日涨幅：<span id="day-change">--</span></p>
+          <p>资金费率年化：<span id="funding-annualized">--</span></p>
         </div>
         <div class="account-info">
           <p>1. 币安的账户余额：<span id="account-balance">未读取</span></p>
           <p>2. 币安的仓位RNL：<span id="account-pnl">未读取</span></p>
           <div id="position-info" class="position-info">
-            <p>开仓价格：<span id="position-entry">--</span></p>
+            <p>
+              开仓价格：<span id="position-entry">--</span>
+              <span class="inline-divider">/</span>
+              爆仓价格：<span id="position-liquidation">--</span>
+            </p>
             <p>仓位大小：<span id="position-size">--</span></p>
-            <p>爆仓价格：<span id="position-liquidation">--</span></p>
+            <p>未实现盈亏：<span id="unrealized-pnl">--</span></p>
+            <p>已实现盈亏：<span id="realized-pnl">--</span></p>
           </div>
         </div>
-        <form id="key-form" class="key-form">
-          <label class="key-field">
-            <span>Binance API Key</span>
-            <input
-              id="binance-api-key"
-              type="text"
-              autocomplete="off"
-              placeholder="API Key"
-            />
-          </label>
-          <label class="key-field">
-            <span>Binance Secret Key</span>
-            <input
-              id="binance-api-secret"
-              type="password"
-              autocomplete="off"
-              placeholder="Secret Key"
-            />
-          </label>
-          <div class="key-actions">
-            <button class="key-button primary" type="submit">保存</button>
-            <button id="clear-keys" class="key-button" type="button">
-              清除
-            </button>
-          </div>
-          <p id="key-status" class="key-status"></p>
-        </form>
       </section>
     </main>
 
     <script>
-      const API_URL =
+      const MARKET_API_URL =
+        "https://hello-word-h5-api-sg.onrender.com/api/market/btcusdt";
+      const PRICE_API_URL =
         "https://hello-word-h5-api-sg.onrender.com/api/price/btcusdt";
       const ACCOUNT_API_URL =
         "https://hello-word-h5-api-sg.onrender.com/api/binance/account?symbol=BTCUSDT";
-      const BINANCE_KEY_STORAGE = "binanceApiKey";
-      const BINANCE_SECRET_STORAGE = "binanceApiSecret";
       const REFRESH_SECONDS = 5;
       const priceElement = document.getElementById("btc-price");
       const timeElement = document.getElementById("price-time");
-      const refreshButton = document.getElementById("refresh-button");
-      const keyForm = document.getElementById("key-form");
-      const apiKeyInput = document.getElementById("binance-api-key");
-      const apiSecretInput = document.getElementById("binance-api-secret");
-      const clearKeysButton = document.getElementById("clear-keys");
-      const keyStatusElement = document.getElementById("key-status");
+      const dayChangeElement = document.getElementById("day-change");
+      const fundingAnnualizedElement =
+        document.getElementById("funding-annualized");
       const accountBalanceElement = document.getElementById("account-balance");
       const accountPnlElement = document.getElementById("account-pnl");
       const positionEntryElement = document.getElementById("position-entry");
@@ -85,6 +55,8 @@
       const positionLiquidationElement = document.getElementById(
         "position-liquidation",
       );
+      const unrealizedPnlElement = document.getElementById("unrealized-pnl");
+      const realizedPnlElement = document.getElementById("realized-pnl");
       let isUpdating = false;
 
       function formatPrice(price) {
@@ -117,46 +89,70 @@
         }).format(number);
       }
 
-      async function updatePrice() {
-        if (isUpdating) {
+      function formatPercent(value) {
+        const number = Number(value);
+
+        if (!Number.isFinite(number)) {
+          return "--";
+        }
+
+        const sign = number > 0 ? "+" : "";
+        return `${sign}${formatNumber(number, 2)}%`;
+      }
+
+      function setValueClass(element, value) {
+        const number = Number(value);
+        element.classList.remove("is-positive", "is-negative", "is-neutral");
+
+        if (!Number.isFinite(number) || number === 0) {
+          element.classList.add("is-neutral");
           return;
         }
 
-        isUpdating = true;
-        refreshButton.classList.add("is-loading");
-        refreshButton.disabled = true;
+        element.classList.add(number > 0 ? "is-positive" : "is-negative");
+      }
 
+      async function updateMarketInfo() {
         try {
-          const response = await fetch(API_URL, { cache: "no-store" });
+          const response = await fetch(MARKET_API_URL, { cache: "no-store" });
 
           if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            const fallbackResponse = await fetch(PRICE_API_URL, {
+              cache: "no-store",
+            });
+
+            if (!fallbackResponse.ok) {
+              throw new Error(`API returned ${response.status}`);
+            }
+
+            const fallbackData = await fallbackResponse.json();
+            priceElement.textContent = formatPrice(fallbackData.price);
+            dayChangeElement.textContent = "--";
+            fundingAnnualizedElement.textContent = "--";
+            setValueClass(dayChangeElement, null);
+            setValueClass(fundingAnnualizedElement, null);
+            timeElement.textContent = `Last updated ${formatTime(new Date())}`;
+            return;
           }
 
           const data = await response.json();
           priceElement.textContent = formatPrice(data.price);
+          dayChangeElement.textContent = formatPercent(
+            data.utcDayChangePercent,
+          );
+          setValueClass(dayChangeElement, data.utcDayChangePercent);
+          fundingAnnualizedElement.textContent = formatPercent(
+            data.fundingAnnualizedPercent,
+          );
+          setValueClass(
+            fundingAnnualizedElement,
+            data.fundingAnnualizedPercent,
+          );
           timeElement.textContent = `Last updated ${formatTime(new Date())}`;
         } catch (error) {
           timeElement.textContent = "Unable to load price. Retrying...";
           console.error(error);
-        } finally {
-          isUpdating = false;
-          refreshButton.classList.remove("is-loading");
-          refreshButton.disabled = false;
         }
-      }
-
-      function loadStoredKeys() {
-        apiKeyInput.value = localStorage.getItem(BINANCE_KEY_STORAGE) || "";
-        apiSecretInput.value =
-          localStorage.getItem(BINANCE_SECRET_STORAGE) || "";
-      }
-
-      function getStoredKeys() {
-        return {
-          apiKey: localStorage.getItem(BINANCE_KEY_STORAGE) || "",
-          apiSecret: localStorage.getItem(BINANCE_SECRET_STORAGE) || "",
-        };
       }
 
       function renderEmptyAccount(message) {
@@ -165,26 +161,18 @@
         positionEntryElement.textContent = "--";
         positionSizeElement.textContent = "--";
         positionLiquidationElement.textContent = "--";
+        unrealizedPnlElement.textContent = "--";
+        realizedPnlElement.textContent = "--";
+        setValueClass(accountPnlElement, null);
+        setValueClass(unrealizedPnlElement, null);
+        setValueClass(realizedPnlElement, null);
       }
 
       async function updateAccountInfo() {
-        const { apiKey, apiSecret } = getStoredKeys();
-
-        if (!apiKey || !apiSecret) {
-          renderEmptyAccount("请先保存本地 Key");
-          return;
-        }
-
         accountBalanceElement.textContent = "读取中...";
 
         try {
-          const response = await fetch(ACCOUNT_API_URL, {
-            cache: "no-store",
-            headers: {
-              "X-Binance-API-Key": apiKey,
-              "X-Binance-API-Secret": apiSecret,
-            },
-          });
+          const response = await fetch(ACCOUNT_API_URL, { cache: "no-store" });
           const data = await response.json();
 
           if (!response.ok) {
@@ -207,59 +195,51 @@
             positionEntryElement.textContent = "--";
             positionSizeElement.textContent = "--";
             positionLiquidationElement.textContent = "--";
+            unrealizedPnlElement.textContent = "--";
+            realizedPnlElement.textContent = `${formatNumber(data.realizedPnl, 2)} ${data.realizedPnlAsset || "USDT"}`;
+            setValueClass(accountPnlElement, null);
+            setValueClass(unrealizedPnlElement, null);
+            setValueClass(realizedPnlElement, data.realizedPnl);
             return;
           }
 
           accountPnlElement.textContent = `${formatNumber(btcPosition.pnl, 2)} ${btcPosition.marginAsset || "USDT"}`;
+          setValueClass(accountPnlElement, btcPosition.pnl);
           positionEntryElement.textContent = formatNumber(
             btcPosition.entryPrice,
             2,
           );
-          positionSizeElement.textContent = btcPosition.positionAmt;
+          positionSizeElement.textContent = `${btcPosition.positionAmt} BTC`;
           positionLiquidationElement.textContent = formatNumber(
             btcPosition.liquidationPrice,
             2,
           );
+          unrealizedPnlElement.textContent = `${formatNumber(btcPosition.pnl, 2)} ${btcPosition.marginAsset || "USDT"}`;
+          realizedPnlElement.textContent = `${formatNumber(data.realizedPnl, 2)} ${data.realizedPnlAsset || "USDT"}`;
+          setValueClass(unrealizedPnlElement, btcPosition.pnl);
+          setValueClass(realizedPnlElement, data.realizedPnl);
         } catch (error) {
           renderEmptyAccount(`读取失败：${error.message}`);
           console.error(error);
         }
       }
 
-      function showKeyStatus(message) {
-        keyStatusElement.textContent = message;
-        window.setTimeout(() => {
-          if (keyStatusElement.textContent === message) {
-            keyStatusElement.textContent = "";
-          }
-        }, 2200);
+      async function updateDashboard() {
+        if (isUpdating) {
+          return;
+        }
+
+        isUpdating = true;
+
+        try {
+          await Promise.all([updateMarketInfo(), updateAccountInfo()]);
+        } finally {
+          isUpdating = false;
+        }
       }
 
-      keyForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        localStorage.setItem(BINANCE_KEY_STORAGE, apiKeyInput.value.trim());
-        localStorage.setItem(
-          BINANCE_SECRET_STORAGE,
-          apiSecretInput.value.trim(),
-        );
-        showKeyStatus("已保存到本地");
-        updateAccountInfo();
-      });
-
-      clearKeysButton.addEventListener("click", () => {
-        localStorage.removeItem(BINANCE_KEY_STORAGE);
-        localStorage.removeItem(BINANCE_SECRET_STORAGE);
-        apiKeyInput.value = "";
-        apiSecretInput.value = "";
-        renderEmptyAccount("请先保存本地 Key");
-        showKeyStatus("已清除");
-      });
-
-      refreshButton.addEventListener("click", updatePrice);
-      loadStoredKeys();
-      updatePrice();
-      updateAccountInfo();
-      setInterval(updatePrice, REFRESH_SECONDS * 1000);
+      updateDashboard();
+      setInterval(updateDashboard, REFRESH_SECONDS * 1000);
     </script>
   </body>
 </html>
