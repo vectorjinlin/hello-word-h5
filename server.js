@@ -1,6 +1,7 @@
 const http = require("node:http");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
 
 function loadLocalEnv() {
   if (!fs.existsSync(".env")) {
@@ -55,6 +56,21 @@ function sendJson(res, statusCode, data) {
     "Cache-Control": "no-store",
   });
   res.end(body);
+}
+
+function sendFile(res, filePath, contentType) {
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      sendJson(res, 404, { error: "not_found" });
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-store",
+    });
+    res.end(content);
+  });
 }
 
 async function getBtcUsdtFuturesPrice() {
@@ -205,10 +221,6 @@ function mapBalance(balance) {
   };
 }
 
-function sumIncome(incomes) {
-  return incomes.reduce((total, income) => total + toNumber(income.income), 0);
-}
-
 function mapPosition(position) {
   return {
     symbol: position.symbol,
@@ -228,8 +240,7 @@ function mapPosition(position) {
 
 async function getBinanceAccountInfo(symbol) {
   const balanceParams = symbol ? { asset: "USDT" } : {};
-  const utcDayStartTime = getUtcDayStartTime();
-  const [balanceResponse, positions, realizedPnlHistory] = await Promise.all([
+  const [balanceResponse, positions] = await Promise.all([
     signedBinanceRequest(
       BINANCE_PORTFOLIO_BASE_URL,
       "/papi/v1/balance",
@@ -240,13 +251,6 @@ async function getBinanceAccountInfo(symbol) {
       "/papi/v1/um/positionRisk",
       symbol ? { symbol } : {},
     ),
-    signedBinanceRequest(BINANCE_PORTFOLIO_BASE_URL, "/papi/v1/um/income", {
-      ...(symbol ? { symbol } : {}),
-      incomeType: "REALIZED_PNL",
-      startTime: utcDayStartTime.toString(),
-      endTime: Date.now().toString(),
-      limit: "1000",
-    }),
   ]);
   const balances = Array.isArray(balanceResponse)
     ? balanceResponse
@@ -259,9 +263,6 @@ async function getBinanceAccountInfo(symbol) {
   return {
     balances: balances.map(mapBalance),
     positions: activePositions.map(mapPosition),
-    realizedPnl: sumIncome(realizedPnlHistory),
-    realizedPnlAsset: "USDT",
-    realizedPnlSince: new Date(utcDayStartTime).toISOString(),
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -273,6 +274,24 @@ const server = http.createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && url.pathname === "/") {
+    sendFile(
+      res,
+      path.join(__dirname, "index.html"),
+      "text/html; charset=utf-8",
+    );
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/styles.css") {
+    sendFile(
+      res,
+      path.join(__dirname, "styles.css"),
+      "text/css; charset=utf-8",
+    );
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/health") {
     sendJson(res, 200, { ok: true });
