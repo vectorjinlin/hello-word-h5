@@ -3,12 +3,263 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hello Word H5</title>
+    <title>BTCUSDT Futures Price</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main>
-      <h1>hello word</h1>
+      <section class="price-panel" aria-live="polite">
+        <p class="label">Binance BTCUSDT Futures</p>
+        <h1 id="btc-price">Loading...</h1>
+        <div class="meta-row">
+          <p id="price-time" class="meta">Fetching latest price</p>
+          <button
+            id="refresh-button"
+            class="refresh-button"
+            type="button"
+            aria-label="Update price"
+            title="Update price"
+          >
+            <span class="refresh-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="account-info">
+          <p>1. 币安的账户余额：<span id="account-balance">未读取</span></p>
+          <p>2. 币安的仓位RNL：<span id="account-pnl">未读取</span></p>
+          <div id="position-info" class="position-info">
+            <p>开仓价格：<span id="position-entry">--</span></p>
+            <p>仓位大小：<span id="position-size">--</span></p>
+            <p>爆仓价格：<span id="position-liquidation">--</span></p>
+          </div>
+        </div>
+        <form id="key-form" class="key-form">
+          <label class="key-field">
+            <span>Binance API Key</span>
+            <input
+              id="binance-api-key"
+              type="text"
+              autocomplete="off"
+              placeholder="API Key"
+            />
+          </label>
+          <label class="key-field">
+            <span>Binance Secret Key</span>
+            <input
+              id="binance-api-secret"
+              type="password"
+              autocomplete="off"
+              placeholder="Secret Key"
+            />
+          </label>
+          <div class="key-actions">
+            <button class="key-button primary" type="submit">保存</button>
+            <button id="clear-keys" class="key-button" type="button">
+              清除
+            </button>
+          </div>
+          <p id="key-status" class="key-status"></p>
+        </form>
+      </section>
     </main>
+
+    <script>
+      const API_URL =
+        "https://hello-word-h5-api-sg.onrender.com/api/price/btcusdt";
+      const ACCOUNT_API_URL =
+        "https://hello-word-h5-api-sg.onrender.com/api/binance/account?symbol=BTCUSDT";
+      const BINANCE_KEY_STORAGE = "binanceApiKey";
+      const BINANCE_SECRET_STORAGE = "binanceApiSecret";
+      const REFRESH_SECONDS = 5;
+      const priceElement = document.getElementById("btc-price");
+      const timeElement = document.getElementById("price-time");
+      const refreshButton = document.getElementById("refresh-button");
+      const keyForm = document.getElementById("key-form");
+      const apiKeyInput = document.getElementById("binance-api-key");
+      const apiSecretInput = document.getElementById("binance-api-secret");
+      const clearKeysButton = document.getElementById("clear-keys");
+      const keyStatusElement = document.getElementById("key-status");
+      const accountBalanceElement = document.getElementById("account-balance");
+      const accountPnlElement = document.getElementById("account-pnl");
+      const positionEntryElement = document.getElementById("position-entry");
+      const positionSizeElement = document.getElementById("position-size");
+      const positionLiquidationElement = document.getElementById(
+        "position-liquidation",
+      );
+      let isUpdating = false;
+
+      function formatPrice(price) {
+        return new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: "USD",
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }).format(price);
+      }
+
+      function formatTime(date) {
+        return new Intl.DateTimeFormat("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }).format(date);
+      }
+
+      function formatNumber(value, digits = 2) {
+        const number = Number(value);
+
+        if (!Number.isFinite(number)) {
+          return "--";
+        }
+
+        return new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
+        }).format(number);
+      }
+
+      async function updatePrice() {
+        if (isUpdating) {
+          return;
+        }
+
+        isUpdating = true;
+        refreshButton.classList.add("is-loading");
+        refreshButton.disabled = true;
+
+        try {
+          const response = await fetch(API_URL, { cache: "no-store" });
+
+          if (!response.ok) {
+            throw new Error(`API returned ${response.status}`);
+          }
+
+          const data = await response.json();
+          priceElement.textContent = formatPrice(data.price);
+          timeElement.textContent = `Last updated ${formatTime(new Date())}`;
+        } catch (error) {
+          timeElement.textContent = "Unable to load price. Retrying...";
+          console.error(error);
+        } finally {
+          isUpdating = false;
+          refreshButton.classList.remove("is-loading");
+          refreshButton.disabled = false;
+        }
+      }
+
+      function loadStoredKeys() {
+        apiKeyInput.value = localStorage.getItem(BINANCE_KEY_STORAGE) || "";
+        apiSecretInput.value =
+          localStorage.getItem(BINANCE_SECRET_STORAGE) || "";
+      }
+
+      function getStoredKeys() {
+        return {
+          apiKey: localStorage.getItem(BINANCE_KEY_STORAGE) || "",
+          apiSecret: localStorage.getItem(BINANCE_SECRET_STORAGE) || "",
+        };
+      }
+
+      function renderEmptyAccount(message) {
+        accountBalanceElement.textContent = message;
+        accountPnlElement.textContent = "--";
+        positionEntryElement.textContent = "--";
+        positionSizeElement.textContent = "--";
+        positionLiquidationElement.textContent = "--";
+      }
+
+      async function updateAccountInfo() {
+        const { apiKey, apiSecret } = getStoredKeys();
+
+        if (!apiKey || !apiSecret) {
+          renderEmptyAccount("请先保存本地 Key");
+          return;
+        }
+
+        accountBalanceElement.textContent = "读取中...";
+
+        try {
+          const response = await fetch(ACCOUNT_API_URL, {
+            cache: "no-store",
+            headers: {
+              "X-Binance-API-Key": apiKey,
+              "X-Binance-API-Secret": apiSecret,
+            },
+          });
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.message || `API returned ${response.status}`);
+          }
+
+          const usdtBalance =
+            data.balances.find((balance) => balance.asset === "USDT") ||
+            data.balances[0];
+          const btcPosition =
+            data.positions.find((position) => position.symbol === "BTCUSDT") ||
+            data.positions[0];
+
+          accountBalanceElement.textContent = usdtBalance
+            ? `${formatNumber(usdtBalance.balance, 2)} ${usdtBalance.asset}`
+            : "无余额";
+
+          if (!btcPosition) {
+            accountPnlElement.textContent = "无持仓";
+            positionEntryElement.textContent = "--";
+            positionSizeElement.textContent = "--";
+            positionLiquidationElement.textContent = "--";
+            return;
+          }
+
+          accountPnlElement.textContent = `${formatNumber(btcPosition.pnl, 2)} ${btcPosition.marginAsset || "USDT"}`;
+          positionEntryElement.textContent = formatNumber(
+            btcPosition.entryPrice,
+            2,
+          );
+          positionSizeElement.textContent = btcPosition.positionAmt;
+          positionLiquidationElement.textContent = formatNumber(
+            btcPosition.liquidationPrice,
+            2,
+          );
+        } catch (error) {
+          renderEmptyAccount(`读取失败：${error.message}`);
+          console.error(error);
+        }
+      }
+
+      function showKeyStatus(message) {
+        keyStatusElement.textContent = message;
+        window.setTimeout(() => {
+          if (keyStatusElement.textContent === message) {
+            keyStatusElement.textContent = "";
+          }
+        }, 2200);
+      }
+
+      keyForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        localStorage.setItem(BINANCE_KEY_STORAGE, apiKeyInput.value.trim());
+        localStorage.setItem(
+          BINANCE_SECRET_STORAGE,
+          apiSecretInput.value.trim(),
+        );
+        showKeyStatus("已保存到本地");
+        updateAccountInfo();
+      });
+
+      clearKeysButton.addEventListener("click", () => {
+        localStorage.removeItem(BINANCE_KEY_STORAGE);
+        localStorage.removeItem(BINANCE_SECRET_STORAGE);
+        apiKeyInput.value = "";
+        apiSecretInput.value = "";
+        renderEmptyAccount("请先保存本地 Key");
+        showKeyStatus("已清除");
+      });
+
+      refreshButton.addEventListener("click", updatePrice);
+      loadStoredKeys();
+      updatePrice();
+      updateAccountInfo();
+      setInterval(updatePrice, REFRESH_SECONDS * 1000);
+    </script>
   </body>
 </html>
