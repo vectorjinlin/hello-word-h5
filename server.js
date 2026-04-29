@@ -6,6 +6,8 @@ const BINANCE_API_KEY = process.env.BINANCE_API_KEY;
 const BINANCE_API_SECRET = process.env.BINANCE_API_SECRET;
 const BINANCE_FUTURES_BASE_URL =
   process.env.BINANCE_FUTURES_BASE_URL || "https://fapi.binance.com";
+const BINANCE_PORTFOLIO_BASE_URL =
+  process.env.BINANCE_PORTFOLIO_BASE_URL || "https://papi.binance.com";
 const BINANCE_FUTURES_PRICE_URL =
   `${BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/price?symbol=BTCUSDT`;
 
@@ -63,7 +65,12 @@ function signQuery(queryString, apiSecret) {
     .digest("hex");
 }
 
-async function signedBinanceRequest(path, params = {}, credentials = {}) {
+async function signedBinanceRequest(
+  baseUrl,
+  path,
+  params = {},
+  credentials = {},
+) {
   const apiKey = credentials.apiKey || BINANCE_API_KEY;
   const apiSecret = credentials.apiSecret || BINANCE_API_SECRET;
 
@@ -76,7 +83,7 @@ async function signedBinanceRequest(path, params = {}, credentials = {}) {
   });
   const queryString = searchParams.toString();
   const signature = signQuery(queryString, apiSecret);
-  const url = `${BINANCE_FUTURES_BASE_URL}${path}?${queryString}&signature=${signature}`;
+  const url = `${baseUrl}${path}?${queryString}&signature=${signature}`;
 
   const response = await fetch(url, {
     headers: {
@@ -105,9 +112,16 @@ function mapBalance(balance) {
   return {
     asset: balance.asset,
     balance: balance.balance,
+    totalWalletBalance: balance.totalWalletBalance,
     availableBalance: balance.availableBalance,
     crossWalletBalance: balance.crossWalletBalance,
     crossUnPnl: balance.crossUnPnl,
+    crossMarginAsset: balance.crossMarginAsset,
+    crossMarginFree: balance.crossMarginFree,
+    umWalletBalance: balance.umWalletBalance,
+    umUnrealizedPNL: balance.umUnrealizedPNL,
+    cmWalletBalance: balance.cmWalletBalance,
+    cmUnrealizedPNL: balance.cmUnrealizedPNL,
     maxWithdrawAmount: balance.maxWithdrawAmount,
     updateTime: balance.updateTime,
   };
@@ -123,20 +137,32 @@ function mapPosition(position) {
     pnl: position.unRealizedProfit,
     markPrice: position.markPrice,
     notional: position.notional,
-    marginAsset: position.marginAsset,
+    marginAsset: position.marginAsset || "USDT",
+    breakEvenPrice: position.breakEvenPrice,
+    leverage: position.leverage,
     updateTime: position.updateTime,
   };
 }
 
 async function getBinanceAccountInfo(symbol, credentials) {
-  const [balances, positions] = await Promise.all([
-    signedBinanceRequest("/fapi/v3/balance", {}, credentials),
+  const balanceParams = symbol ? { asset: "USDT" } : {};
+  const [balanceResponse, positions] = await Promise.all([
     signedBinanceRequest(
-      "/fapi/v3/positionRisk",
+      BINANCE_PORTFOLIO_BASE_URL,
+      "/papi/v1/balance",
+      balanceParams,
+      credentials,
+    ),
+    signedBinanceRequest(
+      BINANCE_PORTFOLIO_BASE_URL,
+      "/papi/v1/um/positionRisk",
       symbol ? { symbol } : {},
       credentials,
     ),
   ]);
+  const balances = Array.isArray(balanceResponse)
+    ? balanceResponse
+    : [balanceResponse];
 
   const activePositions = positions.filter(
     (position) => toNumber(position.positionAmt) !== 0,
